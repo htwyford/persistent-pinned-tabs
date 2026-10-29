@@ -1,0 +1,21 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <link rel="stylesheet" href="options.css">
+</head>
+<body>
+  <section>
+    <h2>When you close a pinned tab</h2>
+    <label><input type="radio" name="closeBehavior" value="reset"> Keep it pinned and reset it to its pinned URL (Arc)</label>
+    <label><input type="radio" name="closeBehavior" value="unpin"> Close it and forget the pin (Firefox default)</label>
+    <p class="hint">To remove a pin in Arc mode, right-click the tab and choose Unpin Tab.</p>
+  </section>
+  <section>
+    <h2>Pinned tabs</h2>
+    <ul id="pins"></ul>
+    <p id="empty" class="hint" hidden>No pinned tabs yet. Pin a tab in Firefox and it shows up here.</p>
+  </section>
+  <script src="options.js"></script>
+</body>
+</html>
