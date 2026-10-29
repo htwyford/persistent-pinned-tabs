@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Persistent Pinned Tabs",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Arc-style pinned tabs: your pinned set is restored on every launch, and closing a pinned tab resets it to its pinned URL instead of losing it.",
   "author": "Harry Twyford",
   "homepage_url": "https://github.com/htwyford/persistent-pinned-tabs",

@@ -188,9 +188,13 @@ async function removePin(pinId) {
   await browser.storage.local.set({ pins });
 }
 
-async function init() {
+// Wait for session restore only when it may still be running: at browser
+// startup, or after an update (Firefox applies updates at startup). After a
+// fresh install or a mid-session enable the tabs are already there, and
+// waiting would ignore whatever the user pins in the meantime.
+async function init({ waitForRestore = false } = {}) {
   if (await isReady()) return;
-  await settle();
+  if (waitForRestore) await settle();
   await reconcile();
   await browser.storage.session.set({ ready: true });
   await rebuild();
@@ -225,9 +229,10 @@ async function setPinUrl(tabId) {
 
 // --- Events ---------------------------------------------------------------
 
-browser.runtime.onStartup.addListener(() => serial(init));
+browser.runtime.onStartup.addListener(() => serial(() => init({ waitForRestore: true })));
 
-browser.runtime.onInstalled.addListener(() => {
+browser.runtime.onInstalled.addListener(({ reason }) => {
+  serial(() => init({ waitForRestore: reason !== "install" }));
   browser.menus.create({
     id: "reset-pin",
     title: "Reset to Pinned URL",
@@ -320,6 +325,7 @@ browser.runtime.onMessage.addListener((msg) => {
   }
 });
 
-// Covers the extension being enabled or reloaded mid-session, when neither
-// onStartup nor onInstalled necessarily fires. init() is a no-op once ready.
-serial(init);
+// Covers the extension being enabled mid-session, when neither onStartup nor
+// onInstalled fires. Deferred so that, at browser startup, onStartup's
+// settling init() is queued first; init() is a no-op once ready.
+setTimeout(() => serial(init), 1000);
