@@ -26,4 +26,4 @@ npx web-ext lint
 npx web-ext sign     # unlisted channel; needs WEB_EXT_API_KEY / WEB_EXT_API_SECRET
 ```
 
-MIT licensed.
+Licensed under the [GNU General Public License v3.0](LICENSE).
