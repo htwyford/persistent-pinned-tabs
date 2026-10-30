@@ -1,0 +1,25 @@
+{
+  "slug": "persistent-pinned-tabs",
+  "summary": {
+    "en-US": "Pinned tabs stay pinned even after closing Firefox. Closing a pinned tab resets it to the page you pinned instead of losing it."
+  },
+  "description": {
+    "en-US": "Pinned tabs stay pinned even after closing Firefox, including when Firefox isn't set to restore your previous session. Pinned tabs that aren't open when Firefox starts are reopened, and don't load until you select them.\n\nClosing a pinned tab resets it to the page you pinned instead of closing it. To remove a pinned tab, unpin it first. You can switch back to Firefox's default behavior in the extension's settings.\n\nRight-clicking a pinned tab adds two options: \"Reset to Pinned URL\" and \"Make This the Pinned URL\". You can assign a keyboard shortcut to the reset option on Firefox's Manage Extension Shortcuts page.\n\nYour pinned tabs are stored locally in Firefox.\n\nSource: https://github.com/htwyford/persistent-pinned-tabs"
+  },
+  "categories": {
+    "firefox": [
+      "tabs"
+    ]
+  },
+  "homepage": {
+    "en-US": "https://github.com/htwyford/persistent-pinned-tabs"
+  },
+  "requires_payment": false,
+  "version": {
+    "license": "GPL-3.0-only",
+    "release_notes": {
+      "en-US": "First release on addons.mozilla.org."
+    },
+    "approval_notes": "tabs: reads pinned tabs' URLs and titles, and reopens missing pins at startup. menus: two items in the tab context menu. storage: keeps the pin list locally. No network requests, no remote code, no data collection. The source is unminified and identical to https://github.com/htwyford/persistent-pinned-tabs."
+  }
+}
