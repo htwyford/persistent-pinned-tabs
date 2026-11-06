@@ -18,8 +18,8 @@
   "version": {
     "license": "GPL-3.0-only",
     "release_notes": {
-      "en-US": "First release on addons.mozilla.org."
+      "en-US": "Fixes pinned tabs multiplying. On macOS, closing your last window and opening a new one could save extra pins, including pages the pinned tab had navigated to, which all opened at the next restart. This update removes those leftover pins and exact duplicates once. Any extra pinned tabs you can already see for different pages stay until you unpin them. Adds the sessions permission, used to recognize restored tabs."
     },
-    "approval_notes": "tabs: reads pinned tabs' URLs and titles, and reopens missing pins at startup. menus: two items in the tab context menu. storage: keeps the pin list locally. No network requests, no remote code, no data collection. The source is unminified and identical to https://github.com/htwyford/persistent-pinned-tabs."
+    "approval_notes": "tabs: reads pinned tabs' URLs and titles, and reopens missing pins at startup. menus: two items in the tab context menu. storage: keeps the pin list locally. sessions: stores each pinned tab's pin ID as a tab value (setTabValue/getTabValue) so a tab Firefox restores can be matched to its pin; it does not read closed-tab or history data. No network requests, no remote code, no data collection. The source is unminified and identical to https://github.com/htwyford/persistent-pinned-tabs."
   }
 }

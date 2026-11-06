@@ -4,12 +4,20 @@
 //
 // storage.local:   pins          [{ id, url, title }] in tab-strip order
 //                  closeBehavior "reset" | "unpin"
+//                  dedupedPins   true once the one-time duplicate cleanup has run
+//                  prunedPins    true once the one-time hidden pin cleanup has run
 // storage.session: tabPins       { [tabId]: pinId } for live tabs
+//                  placeholders  [tabId] tabs we opened for a pin, which give way
+//                                if Firefox then restores the pin's original tab
 //                  ready         true once this browser session has been reconciled
+// sessions API:    each pinned tab carries its pinId as a tab value
 //
-// Tab ids and storage.session are both wiped on restart, so after a restart we
-// re-associate pins with whatever Firefox's session restore brought back.
+// Firefox gives a tab a new id whenever it restores one: after a restart, or
+// when it puts pinned tabs back in a new window after the last one was closed
+// on macOS. The tab value survives that, so a restored tab can reclaim its pin
+// instead of looking like a tab the user just pinned.
 
+const PIN_TAG = "pinId";
 const BLANK_URLS = new Set(["about:blank", "about:newtab", "about:home"]);
 const SETTLE_QUIET_MS = 1000;
 const SETTLE_MAX_MS = 15000;
@@ -44,6 +52,27 @@ async function isReady() {
 async function normalTabs() {
   const tabs = await browser.tabs.query({ windowType: "normal" });
   return tabs.filter((t) => !t.incognito);
+}
+
+async function getPinTag(tabId) {
+  try {
+    return await browser.sessions.getTabValue(tabId, PIN_TAG);
+  } catch {
+    return undefined;
+  }
+}
+
+async function setPinTag(tabId, pinId) {
+  try {
+    await browser.sessions.setTabValue(tabId, PIN_TAG, pinId);
+  } catch (e) {
+    console.warn("[pinned-tabs] could not tag tab", tabId, e);
+  }
+}
+
+async function getPlaceholders() {
+  const { placeholders = [] } = await browser.storage.session.get("placeholders");
+  return placeholders;
 }
 
 function origin(url) {
@@ -101,10 +130,44 @@ async function openPin(pin, windowId, index, tabPins) {
   // Record the association before pinning, so the pinned-change handler
   // (queued behind us) recognises the tab instead of minting a new pin.
   tabPins[tab.id] = pin.id;
-  await browser.storage.session.set({ tabPins });
+  await browser.storage.session.set({
+    tabPins,
+    placeholders: [...(await getPlaceholders()), tab.id],
+  });
+  await setPinTag(tab.id, pin.id);
   await browser.tabs.update(tab.id, { pinned: true });
   await browser.tabs.move(tab.id, { index });
   return tab;
+}
+
+// Versions before 1.0.3 saved an extra pin each time Firefox restored a pinned
+// tab into a new window, so a pin with no open tab is a leftover, not something
+// the user is missing: Firefox restores pinned tabs itself. Runs once, and drops
+// those pins instead of opening them. Returns true if it dropped any.
+//
+// If no pinned tabs are open at all, Firefox didn't restore anything (it may be
+// set to clear data on quit), so nothing can be told apart: keep them all.
+async function pruneHiddenPinsOnce(pins, tabs, tabPins) {
+  const { prunedPins = false } = await browser.storage.local.get("prunedPins");
+  if (prunedPins) return false;
+  const open = new Set(Object.values(tabPins));
+  const hidden = pins.filter((p) => !open.has(p.id));
+  if (!open.size || !hidden.length) {
+    await browser.storage.local.set({ prunedPins: true });
+    return false;
+  }
+  // The oldest pin for a site is the one the user made; later ones are pages the
+  // tab wandered to. Keep the user's original as the page the open tab resets to.
+  const kept = pins.filter((p) => open.has(p.id));
+  for (const pin of kept) {
+    const original = pins.find((p) => origin(p.url) === origin(pin.url));
+    if (original && !open.has(original.id)) {
+      pin.url = original.url;
+      pin.title = original.title;
+    }
+  }
+  await browser.storage.local.set({ pins: kept, prunedPins: true });
+  return true;
 }
 
 // Match stored pins to live tabs, then open any pin that has no tab.
@@ -127,8 +190,17 @@ async function reconcile(windowId) {
     candidates = candidates.filter((t) => t !== tab);
   };
 
-  // Exact URL, then same origin, then whatever is left in order. The last pass
-  // covers a pinned tab that was navigated somewhere else before the restart.
+  // A tab carrying a pin's tag is that pin, wherever it has navigated since.
+  const byId = new Map(pins.map((p) => [p.id, p]));
+  for (const tab of [...candidates]) {
+    const pin = byId.get(await getPinTag(tab.id));
+    if (!pin) continue;
+    if (claimed.has(pin.id)) candidates = candidates.filter((t) => t !== tab);
+    else claim(pin, tab);
+  }
+
+  // Tabs from before tags existed: exact URL, then same origin, then whatever
+  // is left in order, which covers a pinned tab that was navigated elsewhere.
   const passes = [
     (pin, tab) => tab.url === pin.url,
     (pin, tab) => origin(tab.url) !== null && origin(tab.url) === origin(pin.url),
@@ -142,6 +214,9 @@ async function reconcile(windowId) {
     }
   }
   await browser.storage.session.set({ tabPins });
+  for (const [tabId, pinId] of Object.entries(tabPins)) await setPinTag(Number(tabId), pinId);
+
+  if (await pruneHiddenPinsOnce(pins, tabs, tabPins)) return;
 
   const missing = pins.filter((p) => !claimed.has(p.id));
   if (!missing.length) return;
@@ -157,19 +232,44 @@ async function rebuild() {
   if (!(await isReady())) return;
   const pins = await getPins();
   const tabPins = await getTabPins();
+  const placeholders = await getPlaceholders();
   const byId = new Map(pins.map((p) => [p.id, p]));
 
   const tabs = (await normalTabs())
     .filter((t) => t.pinned)
     .sort((a, b) => a.windowId - b.windowId || a.index - b.index);
+  const liveIds = new Set(tabs.map((t) => t.id));
 
   const nextPins = [];
   const nextTabPins = {};
+  const replaced = new Set();
   for (const tab of tabs) {
+    if (replaced.has(tab.id)) continue;
     let pin = byId.get(tabPins[tab.id]);
+    if (!pin) {
+      // A tab we don't recognise may be one Firefox restored under a new id.
+      const tagged = byId.get(await getPinTag(tab.id));
+      if (tagged) {
+        const holder = Object.keys(tabPins)
+          .map(Number)
+          .find((id) => id !== tab.id && liveIds.has(id) && tabPins[id] === tagged.id);
+        if (holder === undefined) {
+          pin = tagged;
+        } else if (placeholders.includes(holder)) {
+          // We reopened this pin before Firefox restored the real tab.
+          replaced.add(holder);
+          delete tabPins[holder];
+          delete nextTabPins[holder];
+          pin = tagged;
+        }
+        // Otherwise the pin's own tab is open, so this is a copy of it (for
+        // example from Duplicate Tab) and becomes a pin of its own.
+      }
+    }
     if (!pin) pin = { id: crypto.randomUUID(), url: tab.url, title: tab.title };
-    if (nextPins.includes(pin)) continue;
-    nextPins.push(pin);
+    tabPins[tab.id] = pin.id;
+    await setPinTag(tab.id, pin.id);
+    if (!nextPins.includes(pin)) nextPins.push(pin);
     nextTabPins[tab.id] = pin.id;
   }
 
@@ -181,11 +281,45 @@ async function rebuild() {
 
   await browser.storage.local.set({ pins: nextPins });
   await browser.storage.session.set({ tabPins: nextTabPins });
+  // The mapping is already gone, so onRemoved won't reopen these.
+  if (replaced.size) await browser.tabs.remove([...replaced]);
 }
 
 async function removePin(pinId) {
   const pins = (await getPins()).filter((p) => p.id !== pinId);
   await browser.storage.local.set({ pins });
+}
+
+// Versions before 1.0.3 could save the same page as several pins. Runs once.
+// Leaves a copy alone if it has been navigated away, since it may be in use.
+async function dedupePinsOnce() {
+  const { dedupedPins = false } = await browser.storage.local.get("dedupedPins");
+  if (dedupedPins) return;
+  const pins = await getPins();
+  const tabPins = await getTabPins();
+  const tabs = await normalTabs();
+  const seen = new Set();
+  const kept = [];
+  const extras = [];
+  for (const pin of pins) {
+    if (!seen.has(pin.url)) {
+      seen.add(pin.url);
+      kept.push(pin);
+      continue;
+    }
+    const tab = tabs.find((t) => tabPins[t.id] === pin.id);
+    if (tab && !tab.discarded && tab.url !== pin.url) {
+      kept.push(pin);
+      continue;
+    }
+    if (tab) {
+      delete tabPins[tab.id];
+      extras.push(tab.id);
+    }
+  }
+  await browser.storage.local.set({ pins: kept, dedupedPins: true });
+  await browser.storage.session.set({ tabPins });
+  if (extras.length) await browser.tabs.remove(extras);
 }
 
 // Wait for session restore only when it may still be running: at browser
@@ -196,6 +330,7 @@ async function init({ waitForRestore = false } = {}) {
   if (await isReady()) return;
   if (waitForRestore) await settle();
   await reconcile();
+  await dedupePinsOnce();
   await browser.storage.session.set({ ready: true });
   await rebuild();
 }
@@ -252,6 +387,7 @@ browser.tabs.onUpdated.addListener(
       if (change.pinned === false && (await isReady())) {
         const pin = await pinForTab(tabId);
         if (pin) await removePin(pin.id);
+        await browser.sessions.removeTabValue(tabId, PIN_TAG).catch(() => {});
       }
       if ("pinned" in change) return rebuild();
       // A tab pinned while still blank adopts the first real page it loads.
@@ -261,6 +397,21 @@ browser.tabs.onUpdated.addListener(
       }
     }),
   { properties: ["pinned", "url"] }
+);
+
+browser.tabs.onCreated.addListener((tab) => {
+  if (tab.pinned) serial(rebuild);
+});
+
+// Once the user has switched to a tab we opened, it stays even if the original
+// turns up later: they may be using it.
+browser.tabs.onActivated.addListener(({ tabId }) =>
+  serial(async () => {
+    const placeholders = await getPlaceholders();
+    if (placeholders.includes(tabId)) {
+      await browser.storage.session.set({ placeholders: placeholders.filter((id) => id !== tabId) });
+    }
+  })
 );
 
 browser.tabs.onMoved.addListener(() => serial(rebuild));
